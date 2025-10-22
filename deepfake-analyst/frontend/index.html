@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Deepfake Content Analyzer</title>
+    <link rel="stylesheet" href="style.css"/>
+  </head>
+
+  <body>
+    <div class="container">
+      <header class="header">
+        <h1 class="title">Deepfake Content Analyzer</h1>
+        <p class="subtitle">Quickly check videos for deepfake indicators — privacy-first and local-friendly.</p>
+      </header>
+
+      <main>
+        <section class="card upload-card" aria-labelledby="upload-heading">
+          <h2 id="upload-heading">Upload video</h2>
+
+          <label for="video-upload" class="file-label">
+            <input id="video-upload" type="file" accept="video/*" />
+            <div class="file-prompt">Choose a video or drag &amp; drop here</div>
+          </label>
+
+          <div class="controls">
+            <button id="analyze-btn" class="btn">Start analyzing</button>
+          </div>
+
+          <div id="spinner" class="spinner" aria-hidden="true" aria-live="polite">
+            <div class="dot dot1"></div>
+            <div class="dot dot2"></div>
+            <div class="dot dot3"></div>
+            <span class="sr-only">Analyzing…</span>
+          </div>
+        </section>
+
+        <aside id="results" class="card results-card" aria-live="polite">
+          <h2>Results</h2>
+          <div class="results-empty">No results yet. Upload a video and click <strong>Start analyzing</strong>.</div>
+        </aside>
+      </main>
+
+      <footer class="footer">
+        <small>Built with accessibility and privacy in mind — all analysis runs locally when possible.</small>
+      </footer>
+    </div>
+
+    <script src="script.js" defer></script>
+  </body>
+</html>
