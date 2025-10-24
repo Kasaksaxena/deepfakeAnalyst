@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
     <title>Deepfake Content Analyzer</title>
     <link rel="stylesheet" href="style.css"/>
   </head>
@@ -36,9 +36,16 @@
         </section>
 
         <aside id="results" class="card results-card" aria-live="polite">
-          <h2>Results</h2>
-          <div class="results-empty">No results yet. Upload a video and click <strong>Start analyzing</strong>.</div>
+          <div class="result-card-inner" id="result-card-inner">
+            <div class="result-card-front" id="result-front">
+            <!-- Summary/result will be inserted here by JS -->
+            </div>
+            <div class="result-card-back" id="result-back">
+            <!-- Raw data will be inserted here by JS -->
+            </div>
+          </div>
         </aside>
+
       </main>
 
       <footer class="footer">

@@ -26,11 +26,16 @@ function showLoading(show = true) {
 
 // Utility: show a friendly message inside results area
 function setResultsMessage(message) {
-  resultsContainer.innerHTML = `
-    <h2>Results</h2>
-    <div class="results-empty">${message}</div>
-  `;
+  // Always show default or error message on result-front, never on resultsContainer!
+  const frontDiv = document.getElementById('result-front');
+  const inner = document.getElementById('result-card-inner');
+  if(frontDiv && inner) {
+    frontDiv.innerHTML = `<div class="results-empty">${message}</div>`;
+    document.getElementById('result-back').innerHTML = ''; // Clear back
+    inner.classList.remove('flipped');
+  }
 }
+
 
 // Utility: map probability to a badge class and label
 function probabilityBadge(prob) {
@@ -50,44 +55,60 @@ function safeString(v, fallback = '—') {
   return String(v);
 }
 
-// Build the results HTML from the API response
 function renderResults(data) {
-  // Extract expected fields from the API JSON
-  const label = safeString(data.label, 'No label');
-  const ethicalScore = safeString(data.ethical_score, 'N/A');
-  const deepfakeProb = data.deepfake_probability ?? data.probability ?? null;
-  const transcript = safeString(data.transcript, 'No transcript available');
+  // --- Calculate tags + summary
+  const prob = Number(data.deepfake_probability ?? data.probability ?? 0);
+  const isFake = prob >= 0.7;
+  const probPercent = Math.round(prob * 100);
 
-  const badge = probabilityBadge(deepfakeProb);
-
-  resultsContainer.innerHTML = `
-    <h2>Results</h2>
+  // Front (user summary)
+  document.getElementById('result-front').innerHTML = `
     <div class="result-item">
-      <div class="label">Label</div>
-      <div class="value">${label}</div>
-    </div>
-
-    <div class="result-item" style="margin-top:10px">
-      <div class="label">Ethical score</div>
-      <div class="value">${ethicalScore}</div>
-    </div>
-
-    <div class="result-item" style="margin-top:10px; display:flex; justify-content:space-between; align-items:center">
-      <div>
-        <div class="label">Deepfake probability</div>
-        <div class="value">${safeString(deepfakeProb, 'N/A')}</div>
+      <div style="font-size:18px;margin-bottom:2px;font-weight:600;">
+        ${
+          isFake
+            ? 'Fake Video 🛑'
+            : 'Real Video ✅'
+        }
       </div>
-      <div>
-        <span class="${badge.cls}">${badge.text}</span>
+      <div class="badge" style="font-size:15px;
+        background:${isFake ? '#c71c3c33' : '#19875433'};
+        color:${isFake ? '#ffd1d9' : '#b2ffdf'};
+        margin-bottom:8px;display:inline-block;">
+        ${isFake ? 'Likely Deepfake' : 'Safe and Ethical'}
+      </div>
+      <div style="margin-top:18px">
+        <span class="label" style="font-size:15px;">Ethical score</span><br>
+        <span class="value" style="font-size:17px">${data.ethical_score ?? 'N/A'}</span>
+      </div>
+      <div style="margin-top:18px">
+        <span class="label" style="font-size:15px;">Deepfake score</span><br>
+        <span class="value" style="font-size:17px">${probPercent}%</span>
       </div>
     </div>
-
-    <div class="result-item" style="margin-top:12px">
-      <div class="label">Transcript</div>
-      <div class="value" style="margin-top:6px; white-space:pre-wrap; font-weight:500">${transcript}</div>
-    </div>
+    <div class="result-flip-tip">Click card to view all backend data</div>
   `;
+
+  // --- Back (raw backend result, nicely formatted)
+  document.getElementById('result-back').innerHTML = `
+    <h3 style="font-size:15px;font-weight:400;margin:0 0 8px;">Raw backend result</h3>
+    <pre style="overflow-x:auto;border-radius:6px;background:#23273c99; padding: 16px;">${JSON.stringify(data, null, 2)}</pre>
+    <div class="result-flip-tip">Click card to flip back</div>
+  `;
+
+  // Reset to non-flipped if last state was flipped!
+  document.getElementById('result-card-inner').classList.remove('flipped');
 }
+
+// --- Card flip handler (add end of JS file) ---
+document.getElementById('results').addEventListener('click', function(e) {
+  // Only flip if result is present (to avoid flipping on empty state)
+  const inner = document.getElementById('result-card-inner');
+  if(inner && document.getElementById('result-front').innerHTML.trim() !== "") {
+    inner.classList.toggle('flipped');
+  }
+});
+
 
 // Main function invoked when user clicks "Start analyzing"
 async function analyzeFile() {
@@ -101,7 +122,7 @@ async function analyzeFile() {
   // Prepare form data. Many backends expect the field name 'file' or 'video'.
   // If your backend expects a different key, change 'file' below accordingly.
   const formData = new FormData();
-  formData.append('file', file);
+  formData.append('video', file);
 
   // Show loading state
   showLoading(true);
@@ -132,16 +153,11 @@ async function analyzeFile() {
     // Render the result fields into the results container
     renderResults(json);
   } catch (err) {
-    // Show the error to the user in a friendly way
-    console.error('Analysis error:', err);
-    resultsContainer.innerHTML = `
-      <h2>Results</h2>
-      <div class="result-item">
-        <div class="label">Error</div>
-        <div class="value">${safeString(err.message, 'An unexpected error occurred.')}</div>
-      </div>
-    `;
-  } finally {
+  // Show the error to the user in a friendly way
+  console.error('Analysis error:', err);
+  setResultsMessage('Error: ' + safeString(err.message, 'An unexpected error occurred.'));
+}
+ finally {
     // Always hide loading state and re-enable button
     showLoading(false);
   }
