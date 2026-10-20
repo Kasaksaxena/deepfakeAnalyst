@@ -1,58 +1,56 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1"/>
-    <title>Deepfake Content Analyzer</title>
-    <link rel="stylesheet" href="style.css"/>
-  </head>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Deepfake Content Analyzer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <h1 class="title">Deepfake Content Analyzer</h1>
+      <p class="subtitle">Upload a video to check it for manipulated faces and harmful speech.</p>
+      <p id="backend-status" class="status" data-state="checking">Checking backend…</p>
+    </header>
 
-  <body>
-    <div class="container">
-      <header class="header">
-        <h1 class="title">Deepfake Content Analyzer</h1>
-        <p class="subtitle">Quickly check videos for deepfake indicators — privacy-first and local-friendly.</p>
-      </header>
+    <main>
+      <section class="panel upload" aria-labelledby="upload-heading">
+        <h2 id="upload-heading">Upload video</h2>
 
-      <main>
-        <section class="card upload-card" aria-labelledby="upload-heading">
-          <h2 id="upload-heading">Upload video</h2>
+        <label for="video-upload" id="drop-zone" class="file-label">
+          <input id="video-upload" type="file" accept="video/*" />
+          <span class="file-prompt" id="file-prompt">Choose a video or drag and drop it here</span>
+          <span class="file-hint" id="file-hint">MP4, MOV or WebM</span>
+        </label>
 
-          <label for="video-upload" class="file-label">
-            <input id="video-upload" type="file" accept="video/*" />
-            <div class="file-prompt">Choose a video or drag &amp; drop here</div>
-          </label>
+        <video id="preview" class="preview" controls muted hidden></video>
 
-          <div class="controls">
-            <button id="analyze-btn" class="btn">Start analyzing</button>
-          </div>
+        <div class="controls">
+          <button id="analyze-btn" class="btn" disabled>Analyze video</button>
+          <button id="clear-btn" class="btn ghost" hidden>Remove video</button>
+        </div>
+      </section>
 
-          <div id="spinner" class="spinner" aria-hidden="true" aria-live="polite">
-            <div class="dot dot1"></div>
-            <div class="dot dot2"></div>
-            <div class="dot dot3"></div>
-            <span class="sr-only">Analyzing…</span>
-          </div>
-        </section>
+      <section id="results" class="panel results" aria-live="polite" aria-labelledby="results-heading">
+        <h2 id="results-heading">Result</h2>
+        <div id="result-body"></div>
+      </section>
+    </main>
 
-        <aside id="results" class="card results-card" aria-live="polite">
-          <div class="result-card-inner" id="result-card-inner">
-            <div class="result-card-front" id="result-front">
-            <!-- Summary/result will be inserted here by JS -->
-            </div>
-            <div class="result-card-back" id="result-back">
-            <!-- Raw data will be inserted here by JS -->
-            </div>
-          </div>
-        </aside>
+    <footer class="footer">
+      <small>Scores are estimates from machine-learning models and can be wrong. Don't use them as proof.</small>
+    </footer>
+  </div>
 
-      </main>
-
-      <footer class="footer">
-        <small>Built with accessibility and privacy in mind — all analysis runs locally when possible.</small>
-      </footer>
-    </div>
-
-    <script src="script.js" defer></script>
-  </body>
+  <script>
+    // Optional overrides. Uncomment to point the page at a specific backend:
+    // window.API_BASE = 'https://your-backend.example.com';
+    // window.MAX_UPLOAD_MB = 200;
+  </script>
+  <script src="script.js" defer></script>
+</body>
 </html>

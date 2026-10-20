@@ -1,216 +1,256 @@
 // script.js - Deepfake Content Analyzer
-// Beginner-friendly JavaScript that uploads a video file to a local backend
-// and displays analysis results (label, ethical_score, deepfake_probability, transcript).
 
-// Get references to DOM elements we'll interact with
-const fileInput = document.getElementById('video-upload');
-const analyzeBtn = document.getElementById('analyze-btn');
-const spinner = document.getElementById('spinner');
-const resultsContainer = document.getElementById('results');
+const $ = (id) => document.getElementById(id);
+const fileInput = $('video-upload');
+const dropZone = $('drop-zone');
+const filePrompt = $('file-prompt');
+const fileHint = $('file-hint');
+const preview = $('preview');
+const analyzeBtn = $('analyze-btn');
+const clearBtn = $('clear-btn');
+const resultBody = $('result-body');
+const statusEl = $('backend-status');
 
-// The backend endpoint (running locally as you mentioned)
-const ANALYZE_URL = 'http://127.0.0.1:8000/api/v1/analyze';
+// ---------- Config ----------
+// Local (file:// or localhost) -> FastAPI on port 8000.
+// Deployed -> same origin, or set window.API_BASE in index.html.
+const isLocal = location.protocol === 'file:' || ['localhost', '127.0.0.1'].includes(location.hostname);
+const API_BASE = window.API_BASE ?? (isLocal ? 'http://127.0.0.1:8000' : '');
+const ANALYZE_URL = `${API_BASE}/api/v1/analyze`;
+// Vercel functions reject request bodies over ~4.5 MB, so the hosted default is small.
+const MAX_MB = window.MAX_UPLOAD_MB ?? (isLocal ? 200 : 4);
+const TIMEOUT_MS = 5 * 60 * 1000;
 
-// Utility: toggle spinner visibility and ARIA attributes
-function showLoading(show = true) {
-  if (show) {
-    spinner.classList.add('active');
-    spinner.setAttribute('aria-hidden', 'false');
+const STEPS = [
+  'Uploading video',
+  'Extracting frames and audio',
+  'Checking frames for manipulation',
+  'Transcribing and scanning speech',
+];
+const STEP_DELAYS = [0, 4000, 10000, 20000]; // estimates; the backend sends no live progress
+
+let previewUrl = null;
+let stepTimers = [];
+let lastResult = null;
+
+// ---------- Helpers ----------
+function esc(v) {
+  return String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+const pct = (n) => `${Math.round((Number(n) || 0) * 100)}%`;
+const toProb = (n) => { n = Number(n); if (isNaN(n)) return 0; return n > 1 ? n / 100 : n; };
+const tone = (p) => (p >= 0.8 ? 'bad' : p >= 0.4 ? 'warn' : 'safe');
+
+function setBody(html) { resultBody.innerHTML = html; }
+
+// ---------- Backend status ----------
+async function checkBackend() {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 3000);
+    const r = await fetch(`${API_BASE}/`, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) throw new Error();
+    statusEl.dataset.state = 'online';
+    statusEl.textContent = 'Backend online';
+  } catch {
+    statusEl.dataset.state = 'offline';
+    statusEl.textContent = `Backend not reachable at ${API_BASE || location.origin}`;
+  }
+}
+
+// ---------- File selection ----------
+function setFile(file) {
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+  if (!file) {
+    fileInput.value = '';
+    filePrompt.textContent = 'Choose a video or drag and drop it here';
+    fileHint.textContent = 'MP4, MOV or WebM';
+    preview.hidden = true; preview.removeAttribute('src');
+    analyzeBtn.disabled = true; clearBtn.hidden = true;
+    return;
+  }
+  const mb = file.size / 1024 / 1024;
+  filePrompt.textContent = file.name;
+  fileHint.textContent = `${mb.toFixed(1)} MB`;
+  previewUrl = URL.createObjectURL(file);
+  preview.src = previewUrl; preview.hidden = false;
+  clearBtn.hidden = false;
+  analyzeBtn.disabled = false;
+  if (mb > MAX_MB) {
     analyzeBtn.disabled = true;
+    showError(new Error(`This file is ${mb.toFixed(1)} MB. The limit here is ${MAX_MB} MB.`), 'size');
+  } else if (!file.type.startsWith('video/')) {
+    analyzeBtn.disabled = true;
+    showError(new Error('That file is not a video.'), 'type');
   } else {
-    spinner.classList.remove('active');
-    spinner.setAttribute('aria-hidden', 'true');
+    showEmpty();
+  }
+}
+
+fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
+clearBtn.addEventListener('click', () => { setFile(null); showEmpty(); });
+
+['dragenter', 'dragover'].forEach((ev) => dropZone.addEventListener(ev, (e) => { e.preventDefault(); dropZone.classList.add('dragging'); }));
+['dragleave', 'drop'].forEach((ev) => dropZone.addEventListener(ev, (e) => { e.preventDefault(); dropZone.classList.remove('dragging'); }));
+dropZone.addEventListener('drop', (e) => {
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  const dt = new DataTransfer(); dt.items.add(f);
+  fileInput.files = dt.files;
+  setFile(f);
+});
+
+// ---------- Views ----------
+function showEmpty() {
+  setBody('<p class="empty">No result yet. Choose a video and select Analyze video.</p>');
+}
+
+function showLoading() {
+  setBody(`<ol class="steps">${STEPS.map((s, i) => `<li data-i="${i}">${esc(s)}</li>`).join('')}</ol>
+    <p class="note">Long videos can take a few minutes. Keep this tab open.</p>`);
+  const items = [...resultBody.querySelectorAll('.steps li')];
+  stepTimers.forEach(clearTimeout);
+  stepTimers = STEP_DELAYS.map((d, i) => setTimeout(() => {
+    items.forEach((li, j) => { li.className = j < i ? 'done' : j === i ? 'active' : ''; });
+  }, d));
+}
+
+function stopLoading() { stepTimers.forEach(clearTimeout); stepTimers = []; }
+
+function verdictFor(data, prob) {
+  const label = String(data.label ?? '');
+  if (/harm/i.test(label)) return { tone: 'bad', text: label };
+  if (/susp/i.test(label)) return { tone: 'warn', text: label };
+  if (/safe/i.test(label)) return { tone: 'safe', text: label };
+  return { tone: tone(prob), text: label || (prob >= 0.8 ? 'Likely deepfake' : prob >= 0.4 ? 'Suspicious' : 'Likely real') };
+}
+
+function meter(name, value) {
+  const p = toProb(value);
+  return `<div class="meter">
+    <div class="meter-head"><span>${esc(name)}</span><strong>${pct(p)}</strong></div>
+    <div class="track"><div class="fill" data-tone="${tone(p)}" data-w="${Math.round(p * 100)}"></div></div>
+  </div>`;
+}
+
+function renderResults(data, { demo = false } = {}) {
+  lastResult = data;
+  const prob = toProb(data.deepfake_probability ?? data.probability);
+  const v = verdictFor(data, prob);
+  const transcript = (data.transcript ?? '').trim();
+
+  setBody(`
+    ${demo ? '<span class="badge-demo">Demo data, not from your video</span>' : ''}
+    <div class="verdict" data-tone="${v.tone}"><span class="verdict-dot"></span><h3>${esc(v.text)}</h3></div>
+    ${meter('Deepfake probability', prob)}
+    ${data.harmful_text_probability != null ? meter('Harmful speech probability', data.harmful_text_probability) : ''}
+    ${data.ethical_score != null ? meter('Risk score (higher means riskier)', data.ethical_score) : ''}
+    <div class="block">
+      <h4>Transcript</h4>
+      <p class="transcript ${transcript ? '' : 'muted'}">${transcript ? esc(transcript) : 'No speech detected in this video.'}</p>
+    </div>
+    <details>
+      <summary>Raw backend response</summary>
+      <pre>${esc(JSON.stringify(data, null, 2))}</pre>
+      <div class="controls"><button class="btn ghost" id="copy-json" type="button">Copy JSON</button></div>
+    </details>
+  `);
+
+  // animate meters after paint
+  requestAnimationFrame(() => resultBody.querySelectorAll('.fill').forEach((f) => { f.style.width = f.dataset.w + '%'; }));
+  $('copy-json').addEventListener('click', async (e) => {
+    try { await navigator.clipboard.writeText(JSON.stringify(data, null, 2)); e.target.textContent = 'Copied'; }
+    catch { e.target.textContent = 'Copy failed'; }
+  });
+}
+
+function fixesFor(err, kind) {
+  if (kind === 'size' || kind === 'type') return ['Choose a different video file.'];
+  if (kind === 'timeout') return ['Try a shorter or smaller video.', 'Check the backend terminal to see whether it is still processing.'];
+  if (kind === 'network') {
+    const fixes = [
+      `The page tried <code>${esc(ANALYZE_URL)}</code> and got no answer.`,
+      'Start the backend from the <code>deepfake-analyst</code> folder: <code>uvicorn backend.app.main:app --reload --port 8000</code>',
+      'Make sure your virtual environment is activated first.',
+      'Open <code>http://127.0.0.1:8000/docs</code> in a browser. If it does not load, the server is not running.',
+    ];
+    if (!isLocal) fixes.push('On a hosted site, set <code>window.API_BASE</code> in index.html to your backend URL and allow that origin in CORS.');
+    return fixes;
+  }
+  return [
+    'Read the error text above. It comes from the server.',
+    'Check the backend terminal for a Python traceback.',
+    'Confirm <code>cnn_model.h5</code> and <code>Meso4_DF.h5</code> are in <code>backend/models</code> and loaded at startup.',
+    'Make sure the video is a normal MP4 with a readable video track.',
+  ];
+}
+
+function showError(err, kind = 'server') {
+  stopLoading();
+  setBody(`
+    <div class="verdict" data-tone="error"><span class="verdict-dot"></span><h3>${kind === 'size' || kind === 'type' ? 'Can’t analyze this file' : 'Analysis failed'}</h3></div>
+    <p class="error-text">${esc(err.message)}</p>
+    <ul class="fixes">${fixesFor(err, kind).map((f) => `<li>${f}</li>`).join('')}</ul>
+    <div class="controls">
+      ${kind === 'size' || kind === 'type' ? '' : '<button class="btn" id="retry-btn" type="button">Try again</button>'}
+      <button class="btn ghost" id="demo-btn" type="button">Preview with demo result</button>
+    </div>
+  `);
+  const retry = $('retry-btn');
+  if (retry) retry.addEventListener('click', analyze);
+  $('demo-btn').addEventListener('click', () => renderResults({
+    filename: 'demo.mp4',
+    label: 'Suspicious ⚠',
+    ethical_score: 0.52,
+    deepfake_probability: 0.83,
+    harmful_text_probability: 0.12,
+    transcript: 'This is a sample transcript used to preview the layout.',
+  }, { demo: true }));
+}
+
+// ---------- Analyze ----------
+async function analyze() {
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) { showError(new Error('Choose a video first.'), 'type'); return; }
+
+  const body = new FormData();
+  body.append('video', file); // field name must match `video` in main.py
+
+  analyzeBtn.disabled = true;
+  showLoading();
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+
+  try {
+    const resp = await fetch(ANALYZE_URL, { method: 'POST', body, signal: ctrl.signal });
+    if (!resp.ok) {
+      let text = '';
+      try { text = await resp.text(); } catch { text = resp.statusText; }
+      const err = new Error(`Server responded with ${resp.status}${text ? `: ${text.slice(0, 400)}` : ''}`);
+      err.kind = 'server';
+      throw err;
+    }
+    const json = await resp.json();
+    stopLoading();
+    renderResults(json);
+    checkBackend();
+  } catch (err) {
+    console.error('Analysis error:', err);
+    const kind = err.name === 'AbortError' ? 'timeout' : err.kind || (err instanceof TypeError ? 'network' : 'server');
+    if (kind === 'timeout') err = new Error('The analysis took longer than 5 minutes and was stopped.');
+    if (kind === 'network') err = new Error('Could not reach the backend. It may be offline, or the browser blocked the request.');
+    showError(err, kind);
+    checkBackend();
+  } finally {
+    clearTimeout(timer);
     analyzeBtn.disabled = false;
   }
 }
 
-// Utility: show a friendly message inside results area
-function setResultsMessage(message) {
-  // Always show default or error message on result-front, never on resultsContainer!
-  const frontDiv = document.getElementById('result-front');
-  const inner = document.getElementById('result-card-inner');
-  if(frontDiv && inner) {
-    frontDiv.innerHTML = `<div class="results-empty">${message}</div>`;
-    document.getElementById('result-back').innerHTML = ''; // Clear back
-    inner.classList.remove('flipped');
-  }
-}
+analyzeBtn.addEventListener('click', (e) => { e.preventDefault(); analyze(); });
 
-
-// Utility: map probability to a badge class and label
-function probabilityBadge(prob) {
-  // prob is expected between 0 and 1 (or 0..100). We'll normalize if necessary.
-  if (prob > 1) prob = prob / 100; // handle percent values like 85
-  const p = Number(prob);
-  if (isNaN(p)) return { text: 'Unknown', cls: '' };
-  if (p >= 0.75) return { text: `${Math.round(p * 100)}% — Likely Deepfake`, cls: 'badge fake' };
-  if (p >= 0.4) return { text: `${Math.round(p * 100)}% — Suspicious`, cls: 'badge suspect' };
-  return { text: `${Math.round(p * 100)}% — Likely Real`, cls: 'badge safe' };
-}
-
-// Convert a value (maybe null/undefined) to a safe string for display
-function safeString(v, fallback = '—') {
-  if (v === null || v === undefined) return fallback;
-  if (typeof v === 'number') return String(v);
-  return String(v);
-}
-
-function renderResults(data) {
-  // --- Calculate tags + summary
-  const prob = Number(data.deepfake_probability ?? data.probability ?? 0);
-  const isFake = prob >= 0.7;
-  const probPercent = Math.round(prob * 100);
-
-  // Front (user summary)
-  document.getElementById('result-front').innerHTML = `
-    <div class="result-item">
-      <div style="font-size:18px;margin-bottom:2px;font-weight:600;">
-        ${
-          isFake
-            ? 'Fake Video 🛑'
-            : 'Real Video ✅'
-        }
-      </div>
-      <div class="badge" style="font-size:15px;
-        background:${isFake ? '#c71c3c33' : '#19875433'};
-        color:${isFake ? '#ffd1d9' : '#b2ffdf'};
-        margin-bottom:8px;display:inline-block;">
-        ${isFake ? 'Likely Deepfake' : 'Safe and Ethical'}
-      </div>
-      <div style="margin-top:18px">
-        <span class="label" style="font-size:15px;">Ethical score</span><br>
-        <span class="value" style="font-size:17px">${data.ethical_score ?? 'N/A'}</span>
-      </div>
-      <div style="margin-top:18px">
-        <span class="label" style="font-size:15px;">Deepfake score</span><br>
-        <span class="value" style="font-size:17px">${probPercent}%</span>
-      </div>
-    </div>
-    <div class="result-flip-tip">Click card to view all backend data</div>
-  `;
-
-  // --- Back (raw backend result, nicely formatted)
-  document.getElementById('result-back').innerHTML = `
-    <h3 style="font-size:15px;font-weight:400;margin:0 0 8px;">Raw backend result</h3>
-    <pre style="overflow-x:auto;border-radius:6px;background:#23273c99; padding: 16px;">${JSON.stringify(data, null, 2)}</pre>
-    <div class="result-flip-tip">Click card to flip back</div>
-  `;
-
-  // Reset to non-flipped if last state was flipped!
-  document.getElementById('result-card-inner').classList.remove('flipped');
-}
-
-// --- Card flip handler (add end of JS file) ---
-document.getElementById('results').addEventListener('click', function(e) {
-  // Only flip if result is present (to avoid flipping on empty state)
-  const inner = document.getElementById('result-card-inner');
-  if(inner && document.getElementById('result-front').innerHTML.trim() !== "") {
-    inner.classList.toggle('flipped');
-  }
-});
-
-
-// Main function invoked when user clicks "Start analyzing"
-async function analyzeFile() {
-  // Make sure a file is selected
-  const file = fileInput.files && fileInput.files[0];
-  if (!file) {
-    setResultsMessage('Please choose a video file to analyze.');
-    return;
-  }
-
-  // Prepare form data. Many backends expect the field name 'file' or 'video'.
-  // If your backend expects a different key, change 'file' below accordingly.
-  const formData = new FormData();
-  formData.append('video', file);
-
-  // Show loading state
-  showLoading(true);
-  setResultsMessage('Loading — analyzing the uploaded video. This may take a little while...');
-
-  try {
-    // Send the request using fetch. We do not set the Content-Type header;
-    // the browser will set the correct multipart/form-data boundary when sending FormData.
-    const resp = await fetch(ANALYZE_URL, {
-      method: 'POST',
-      body: formData,
-      // If your backend requires CORS credentials or a token, set them here.
-      // credentials: 'include',
-      // headers: { 'Authorization': 'Bearer <token>' }
-    });
-
-    if (!resp.ok) {
-      // Try to read any error message from the server
-      let errText = '';
-      try { errText = await resp.text(); } catch (e) { errText = resp.statusText; }
-      throw new Error(`Server responded with ${resp.status}: ${errText}`);
-    }
-
-    // Parse JSON response. Expected shape (example):
-    // { label: 'deepfake', ethical_score: 0.32, deepfake_probability: 0.87, transcript: 'Hello world' }
-    const json = await resp.json();
-
-    // Render the result fields into the results container
-    renderResults(json);
-  } catch (err) {
-  // Show the error to the user in a friendly way
-  console.error('Analysis error:', err);
-  setResultsMessage('Error: ' + safeString(err.message, 'An unexpected error occurred.'));
-}
- finally {
-    // Always hide loading state and re-enable button
-    showLoading(false);
-  }
-}
-
-// Wire up the analyze button click
-analyzeBtn.addEventListener('click', (e) => {
-  e.preventDefault();
-  analyzeFile();
-});
-
-// Optional: allow pressing Enter when file input has focus
-fileInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') analyzeFile();
-});
-
-// Initialize helpful message on load
-setResultsMessage('No results yet. Upload a video and click Start analyzing.');
-
-// --- File selection UI helpers ---
-// Assumes existing constants: fileInput, analyzeBtn and a .file-prompt element inside the label.
-const filePrompt = document.querySelector('.file-prompt');
-
-// Show filename, enable analyze button, and log the File object for debugging
-function onFileSelected() {
-  const file = fileInput.files && fileInput.files[0];
-
-  if (!file) {
-    // no file selected (user cancelled)
-    filePrompt.textContent = 'Choose a video or drag & drop here';
-    analyzeBtn.disabled = true;
-    console.log('No file selected.');
-    return;
-  }
-
-  // Show friendly filename (not full path) and enable analyze button
-  const shortName = file.name.length > 48
-    ? file.name.slice(0, 24) + '…' + file.name.slice(-18)
-    : file.name;
-  filePrompt.textContent = `Selected: ${shortName}`;
-  analyzeBtn.disabled = false;
-
-  // Helpful debug info to inspect in Console
-  console.log('File selected for analysis:', {
-    name: file.name,
-    size: file.size,
-    type: file.type,
-    lastModified: file.lastModified
-  });
-}
-
-// Attach the change handler to the input
-fileInput.addEventListener('change', onFileSelected);
-
-// Optional: initialize button disabled until a file is picked
-analyzeBtn.disabled = !(fileInput.files && fileInput.files.length > 0);
+// ---------- Init ----------
+showEmpty();
+checkBackend();
