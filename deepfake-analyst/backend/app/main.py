@@ -22,7 +22,7 @@ import numpy as np
 import whisper
 from transformers import pipeline
 import torch # Needed for text analysis pipeline if it defaults to PyTorch
-   BASE_DIR = Path(__file__).resolve().parent.parent  # the backend folder
+BASE_DIR = Path(__file__).resolve().parent.parent  # the backend folder
 # --- 1. FastAPI App Initialization ---
 app = FastAPI(
     title="Deepfake Analyst API",
