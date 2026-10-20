@@ -4,5 +4,7 @@
    COPY requirements.txt .
    RUN pip install --no-cache-dir -r requirements.txt
    COPY backend ./backend
-   EXPOSE 7860
-   CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "7860"]
+   # Optional: bake the small models into the image so cold starts are faster
+   RUN python -c "import whisper; whisper.load_model('tiny')" \
+    && python -c "from transformers import pipeline; pipeline('text-classification', model='unitary/toxic-bert')"
+   CMD uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-10000}
